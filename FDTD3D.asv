@@ -1,0 +1,240 @@
+%% 3D FDTD - Jeremiah Lightner 2026
+% Ground Conductivities derived from ITU R P832.2
+
+clear all; clc;
+
+c = 299792458;
+mu0 = (4*pi)*10^-7;
+eps0 = (c*sqrt(mu0))^-2;
+num_dims = 3;
+f_max = NaN;
+while isnan(f_max)
+    f_max = input('Enter the maximum relevant frequency (Hz): ', "s");
+    f_max = str2double(f_max);
+    if isnan(f_max)
+        disp('Nice try, thats not a number...')
+    end
+end
+
+% DEFINE GRID SIZE HERE 
+Nx = ceil(301/2);
+Ny = ceil(301/2);
+Nz = ceil(301/2);
+
+% DEFINE GRID OF MATERIAL VALUES HERE
+if num_dims == 1
+    epsr = ones(1,Nx);
+    mur = ones(1,Nx);
+    sigmam = zeros(1,Nx);
+    sigma = zeros(1,Nx);
+elseif num_dims ==2
+    epsr = ones(Nx,Ny);
+    mur = ones(Nx,Ny);
+    sigmam = zeros(Nx,Ny);
+    sigma = zeros(Nx,Ny);
+elseif num_dims == 3
+    epsr = ones(Nx,Ny,Nz);
+    mur = ones(Nx,Ny,Nz);
+    sigmam = zeros(Nx,Ny,Nz);
+    sigma = zeros(Nx,Ny,Nz);
+
+    % sigma(30:33,30:33,33:66) = 1E16;
+end
+
+% Slowest v_p
+lam0_min = c/f_max;
+lam_min = lam0_min/sqrt(max(max(max(epsr))));
+v_p = lam_min*f_max;
+
+%Grid Dispersion Error req ds << lambda
+ds = lam_min/10; 
+
+% Change this if needed one at a time, otherwise we will assume they are all uniform
+if num_dims == 1
+    dx = ds;
+    max_dim_size = max(dx.*size(epsr));
+elseif num_dims ==2
+    dx = ds;
+    dy = ds;
+    max_dim_size = max([dx,dy].*size(epsr));
+elseif num_dims == 3
+    dx = ds;
+    dy = ds;
+    dz = ds;
+    max_dim_size = max(max([dx,dy,dz].*size(epsr)));
+end
+
+% This seems to be giving the incorrect time output, this changed based on 
+disp("Max physical length of simulation: " + max_dim_size + " m")
+disp("Max propagation time for a single wave out and back: " + max_dim_size/v_p + " seconds")
+
+% Establish probe position in the current grid
+% position1 = input('Where would you like to measure the field data (position lat and lon): ');
+
+%create a bit of code that converts lat and lon to surface location within
+%the grid
+
+% CFL Stability Criterion (dt <= (ds/(c*sqrt(n))) for cubic grid
+% CFL Generally (dt <= 1/(v*sqrt(1/dx^2 + 1/dy^2 + 1/dz^2))
+if num_dims == 1
+    dt = ds/(v_p*sqrt(num_dims));
+elseif num_dims == 2
+    if dx ~= dy 
+        dt = 0.99 * 1/(v_p*sqrt(1/dx^2 + 1/dy^2));
+    else
+        dt = ds/(v_p*sqrt(num_dims));
+    end
+elseif num_dims == 3
+    if dx ~= dy || dy ~= dz || dx ~= dz 
+        dt = 0.99 * 1/(v_p*sqrt(1/dx^2 + 1/dy^2 + 1/dz^2));
+    else
+        dt = ds/(v_p*sqrt(num_dims));
+    end
+end
+
+% FIGURE OUT HOW TO CALCULATE THE LONGEST MAX STEPS (Currently we just take
+% the one way propagation and multiply by 100
+max_steps = 100*round(max_dim_size)/(v_p*dt);
+
+t_max = NaN;
+while isnan(t_max)
+    t_max = input('Enter the quantity of time to simulate (s): ', "s");
+    t_max = str2double(t_max);
+    if isnan(t_max)
+        disp('Nice try, thats not a number...')
+    end
+    if t_max >= max_steps*dt
+        disp('WOAH... that is way too long')
+        t_max = NaN;
+    end
+end
+
+num_steps = ceil(t_max/dt);
+
+% Create Fields matrices
+% For a given position there is a field vector that can be described by
+% (Ex(ii,jj,kk),Ey(ii,jj,kk,Ez(ii,jj,kk)) for example
+
+Ex = zeros(Nx,Ny,Nz); %x-pol
+Ey = zeros(Nx,Ny,Nz); %y-pol
+Ez = zeros(Nx,Ny,Nz); %z-pol
+
+Hx = zeros(Nx,Ny,Nz);
+Hy = zeros(Nx,Ny,Nz);
+Hz = zeros(Nx,Ny,Nz);
+
+% Precompute update coefficients cell by cell
+% % % we assume no magnetic conductivity and thus no magnetic currents
+% NEED TO UPDATE TO EVALULATE AT DESIRED LOCATIONS
+
+% Is there a way to keep this as only two sets of constants
+C_Hx_H = (1 - (sigmam.*dt./(2.*mu0.*mur))) ./ (1 + (sigmam.*dt./(2.*mu0.*mur))); %evaulated at m,n+1/2,p+1/2
+C_Hx_E = (dt) ./ ((1 + (sigmam.*dt./(2.*mu0.*mur))).*mu0.*mur.*ds);
+
+C_Hy_H = (1 - (sigmam.*dt./(2.*mu0.*mur))) ./ (1 + (sigmam.*dt./(2.*mu0.*mur))); %evaulated at m+1/2,n,p+1/2
+C_Hy_E = (dt) ./ ((1 + (sigmam.*dt./(2.*mu0.*mur))).*mu0.*mur.*ds);
+% 
+C_Hz_H = (1 - (sigmam.*dt./(2.*mu0.*mur))) ./ (1 + (sigmam.*dt./(2.*mu0.*mur))); %evaulated at m+1/2,n+1/2,p
+C_Hz_E = (dt) ./ ((1 + (sigmam.*dt./(2.*mu0.*mur))).*mu0.*mur.*ds);
+% 
+C_Ex_E = (1 - (sigma.*dt./(2.*eps0.*epsr))) ./ (1 + (sigma.*dt./(2.*eps0.*epsr))); %evaulated at m+1/2,n,p
+C_Ex_H = (dt) ./ ((1 + (sigma.*dt./(2.*eps0.*epsr))).*eps0.*epsr.*ds);
+
+C_Ey_E = (1 - (sigma.*dt./(2.*eps0.*epsr))) ./ (1 + (sigma.*dt./(2.*eps0.*epsr))); %evaulated at m,n+1/2,p
+C_Ey_H = (dt) ./ ((1 + (sigma.*dt./(2.*eps0.*epsr))).*eps0.*epsr.*ds);
+% 
+C_Ez_H = (1 - (sigma.*dt./(2.*eps0.*epsr))) ./ (1 + (sigma.*dt./(2.*eps0.*epsr))); %evaulated at m,n,p+1/2
+C_Ez_E = (dt) ./ ((1 + (sigma.*dt./(2.*eps0.*epsr))).*eps0.*epsr.*ds);
+
+
+
+% Iterate over time 
+
+if num_dims == 3
+    for t = 0:num_steps
+        tic
+        % Update H Field : UPDATE THESE TO BE VECTORIZED
+        for ii = 1:Nx
+            for jj = 1:Ny-1
+                for kk = 1:Nz-1
+                    Hx(ii,jj,kk) = C_Hx_H(ii,jj,kk) * Hx(ii,jj,kk) + C_Hx_E(ii,jj,kk) *(...
+                        (Ey(ii,jj,kk+1)-Ey(ii,jj,kk)) - ...
+                        (Ez(ii,jj+1,kk)-Ez(ii,jj,kk)));
+                end
+            end
+        end
+    
+        for ii = 1:Nx-1
+            for jj = 1:Ny
+                for kk = 1:Nz-1
+                    Hy(ii,jj,kk) = C_Hx_H(ii,jj,kk) * Hy(ii,jj,kk) + C_Hx_E(ii,jj,kk) *(...
+                        (Ez(ii+1,jj,kk)-Ez(ii,jj,kk))-...
+                        (Ex(ii,jj,kk+1)-Ex(ii,jj,kk)));
+                end
+            end
+        end
+        for ii = 1:Nx-1
+            for jj = 1:Ny-1
+                for kk = 1:Nz
+                    Hz(ii,jj,kk) = C_Hx_H(ii,jj,kk) * Hz(ii,jj,kk) + C_Hx_E(ii,jj,kk) *(...
+                        (Ex(ii,jj+1,kk)-Ex(ii,jj,kk))-...
+                        (Ey(ii+1,jj,kk)-Ey(ii,jj,kk)));
+                end
+            end
+        end
+        
+        % Update E Field: UPDATE THESE TO BE VECTORIZED
+        for ii = 1:Nx-1
+            for jj = 2:Ny-1
+                for kk = 2:Nz-1
+                    Ex(ii,jj,kk) = C_Ex_E(ii,jj,kk) * Ex(ii,jj,kk) + C_Ex_H(ii,jj,kk) *(...
+                        (Hz(ii,jj,kk)-Hz(ii,jj-1,kk)) - ...
+                        (Hy(ii,jj,kk)-Hy(ii,jj,kk-1)));
+                end
+            end
+        end
+        for ii = 2:Nx-1
+            for jj = 1:Ny-1
+                for kk = 2:Nz-1
+                    Ey(ii,jj,kk) = C_Ex_E(ii,jj,kk) * Ey(ii,jj,kk) + C_Ex_H(ii,jj,kk) *(...
+                        (Hx(ii,jj,kk)-Hx(ii,jj,kk-1))-...
+                        (Hz(ii,jj,kk)-Hz(ii-1,jj,kk)));
+                end
+            end
+        end
+        for ii = 2:Nx-1
+            for jj = 2:Ny-1
+                for kk = 1:Nz-1
+                    Ez(ii,jj,kk) = C_Ex_E(ii,jj,kk) * Ez(ii,jj,kk) + C_Ex_H(ii,jj,kk) *(...
+                        (Hy(ii,jj,kk)-Hy(ii-1,jj,kk))-...
+                        (Hx(ii,jj,kk)-Hx(ii,jj-1,kk)));
+                end
+            end
+        end
+    
+    
+    % Possibly inject source here
+        % Ez(round(Nx/2),round(Ny/2),round(Nz/2)) = Ez(round(Nx/2),round(Ny/2),round(Nz/2)) + exp(-.5*((t-200)*dt*1E5)^2);
+        f0   = 500e3;                % 50 kHz
+        Nper = 2;                  % number of cycles in the burst
+        T0   = 1/f0;
+        t0   = 0;                   % start time (s) – or set to e.g. 200*dt
+        
+        tt = t*dt;                  % current time in seconds (since t is your loop index)
+        
+        burst = (tt >= t0) && (tt < t0 + Nper*T0);
+        src   = burst * sin(2*pi*f0*(tt - t0));
+        Ez(round(Nx/2),round(Ny/2),round(Nz/2)) = Ez(round(Nx/2),round(Ny/2),round(Nz/2)) + src;
+
+        imagesc(20*log10(abs(Ex(:,:,round(Nz/2)))))
+        title(t*dt)
+        colorbar
+        clim([-100 0])
+        
+        drawnow;
+        EFieldProbe(:,t+1) = [Ex(30,round(Ny/2),round(Nz/2)),Ey(30,round(Ny/2),round(Nz/2)),Ez(30,round(Ny/2),round(Nz/2))];
+        % EFieldProbe1 = [Ex(position1);Ey(position1);Ez(position1)];
+        % HFieldProbe1 = [Hx(position1);Hy(position1);Hz(position1)];
+        toc
+    end
+end
