@@ -146,14 +146,17 @@ C_Ey_H = (dt) ./ ((1 + (sigma.*dt./(2.*eps0.*epsr))).*eps0.*epsr.*ds);
 C_Ez_H = (1 - (sigma.*dt./(2.*eps0.*epsr))) ./ (1 + (sigma.*dt./(2.*eps0.*epsr))); %evaulated at m,n,p+1/2
 C_Ez_E = (dt) ./ ((1 + (sigma.*dt./(2.*eps0.*epsr))).*eps0.*epsr.*ds);
 
+abcState = init_abc_3d(Nx, Ny, Nz);
 
+Sc = c * dt / dx;         % if cubic cells
+abccoef = (Sc - 1) / (Sc + 1);
 
 % Iterate over time 
-
 if num_dims == 3
     for t = 0:num_steps
         tic
         % Update H Field : UPDATE THESE TO BE VECTORIZED
+        %Loop solution
         for ii = 1:Nx
             for jj = 1:Ny-1
                 for kk = 1:Nz-1
@@ -163,11 +166,12 @@ if num_dims == 3
                 end
             end
         end
+        % Hx(ii,jj,kk)= 
     
         for ii = 1:Nx-1
             for jj = 1:Ny
                 for kk = 1:Nz-1
-                    Hy(ii,jj,kk) = C_Hx_H(ii,jj,kk) * Hy(ii,jj,kk) + C_Hx_E(ii,jj,kk) *(...
+                    Hy(ii,jj,kk) = C_Hy_H(ii,jj,kk) * Hy(ii,jj,kk) + C_Hy_E(ii,jj,kk) *(...
                         (Ez(ii+1,jj,kk)-Ez(ii,jj,kk))-...
                         (Ex(ii,jj,kk+1)-Ex(ii,jj,kk)));
                 end
@@ -176,7 +180,7 @@ if num_dims == 3
         for ii = 1:Nx-1
             for jj = 1:Ny-1
                 for kk = 1:Nz
-                    Hz(ii,jj,kk) = C_Hx_H(ii,jj,kk) * Hz(ii,jj,kk) + C_Hx_E(ii,jj,kk) *(...
+                    Hz(ii,jj,kk) = C_Hz_H(ii,jj,kk) * Hz(ii,jj,kk) + C_Hz_E(ii,jj,kk) *(...
                         (Ex(ii,jj+1,kk)-Ex(ii,jj,kk))-...
                         (Ey(ii+1,jj,kk)-Ey(ii,jj,kk)));
                 end
@@ -196,7 +200,7 @@ if num_dims == 3
         for ii = 2:Nx-1
             for jj = 1:Ny-1
                 for kk = 2:Nz-1
-                    Ey(ii,jj,kk) = C_Ex_E(ii,jj,kk) * Ey(ii,jj,kk) + C_Ex_H(ii,jj,kk) *(...
+                    Ey(ii,jj,kk) = C_Ey_E(ii,jj,kk) * Ey(ii,jj,kk) + C_Ey_H(ii,jj,kk) *(...
                         (Hx(ii,jj,kk)-Hx(ii,jj,kk-1))-...
                         (Hz(ii,jj,kk)-Hz(ii-1,jj,kk)));
                 end
@@ -205,7 +209,7 @@ if num_dims == 3
         for ii = 2:Nx-1
             for jj = 2:Ny-1
                 for kk = 1:Nz-1
-                    Ez(ii,jj,kk) = C_Ex_E(ii,jj,kk) * Ez(ii,jj,kk) + C_Ex_H(ii,jj,kk) *(...
+                    Ez(ii,jj,kk) = C_Ez_E(ii,jj,kk) * Ez(ii,jj,kk) + C_Ez_H(ii,jj,kk) *(...
                         (Hy(ii,jj,kk)-Hy(ii-1,jj,kk))-...
                         (Hx(ii,jj,kk)-Hx(ii,jj-1,kk)));
                 end
@@ -237,6 +241,10 @@ if num_dims == 3
         EFieldProbe(:,t+1) = [Ex(30,round(Ny/2),round(Nz/2)),Ey(30,round(Ny/2),round(Nz/2)),Ez(30,round(Ny/2),round(Nz/2))];
         % EFieldProbe1 = [Ex(position1);Ey(position1);Ez(position1)];
         % HFieldProbe1 = [Hx(position1);Hy(position1);Hz(position1)];
+        % --- Apply ABC to E boundaries ---
+        [Ex, Ey, Ez, abcState] = apply_abc_3d(Ex, Ey, Ez, abcState, abccoef);
+
         toc
     end
 end
+
