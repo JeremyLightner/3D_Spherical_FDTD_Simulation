@@ -161,63 +161,37 @@ fprintf('  Radial bounds        : [%g, %g] km\n', r_inner, r_outer);
 % Plot highlighted patch on Earth surface
 plot_earth_volume(theta_min, theta_max, phi_start, phi_end, r_inner, r_outer, R_Earth);
 
-%%
-% Earth radius [km]
-Re = 6371;
-
-% Small amount below ground [km]
-below_ground = 0.1;
-
-% ---------------------------------
-% Convert to spherical bounds
-% Convention:
-%   theta = 0 at north pole
-%   theta = pi/2 at equator
-%   phi   = 0 at prime meridian
-%   westward propagation => decreasing phi
-% ---------------------------------
-
-% Radial bounds
-r_min = Re - below_ground;
-r_max = Re + height_max;
-
-% Starting phi location [rad]
-phi_start = start_point / Re;
-
-% Westward extent in phi
-phi_max = phi_start;
-phi_min = phi_start - dist_max / Re;
-
-% Width centered about equator
-theta_center = pi/2;
-dtheta_half = (width_max / 2) / Re;
-
-theta_min = theta_center - dtheta_half;
-theta_max = theta_center + dtheta_half;
-
-% Keep theta in valid range
-theta_min = max(theta_min, 0);
-theta_max = min(theta_max, pi);
-
-% Optional: wrap phi into [0, 2*pi)
-phi_min = mod(phi_min, 2*pi);
-phi_max = mod(phi_max, 2*pi);
-
-fprintf('Simulation bounds:\n');
-fprintf('r     : [%g, %g] km\n', r_min, r_max);
-fprintf('theta : [%g, %g] rad\n', theta_min, theta_max);
-fprintf('phi   : [%g, %g] rad\n', phi_min, phi_max);
-
-fprintf('theta : [%g, %g] deg\n', rad2deg(theta_min), rad2deg(theta_max));
-fprintf('phi   : [%g, %g] deg\n', rad2deg(phi_min), rad2deg(phi_max));
-
-plot_spherical_volume(Re, r_min, r_max, theta_min, theta_max, phi_min, phi_max);
 
 %% Define Grid Structure
 
+% This does not account for the smallest value of epsr: we will address
+% this
+
+lam_min    = c/f_max;
+v_p        = lam_min*f_max;
+
+%Grid Dispersion Error req ds << lambda
+ds = lam_min/200; 
+
+theta_temp = theta_min:0.0001:theta_max; %radians;
+
+del_r      = ds;
+del_the    = ds / (r_outer);
+del_phi    = ds / (r_outer * max(sin(theta_temp)));
+
 %This will be hardcoded once I know the space
 
+Nr         = ceil((r_outer-r_inner)/del_r);
+Nthe       = ceil(abs(theta_max-theta_min)/del_the);
+Nphi       = ceil(abs(phi_start-phi_end)/del_phi);
 
+E_r = zeros(Nr-1, Nthe, Nphi);
+E_the = zeros(Nr, Nthe-1, Nphi);
+E_phi = zeros(Nr, Nthe, Nphi-1);
+
+H_r = zeros(Nr, Nthe-1, Nphi-1);
+H_the = zeros(Nr-1, Nthe, Nphi-1);
+H_phi = zeros(Nr-1, Nthe-1, Nphi);
 
 %% Create Spatial Property Matrices
 % Material Properties are defined at the 
@@ -288,7 +262,7 @@ if num_dims == 3
     for t = 0:num_steps
         tic
         % Update H Field : UPDATE THESE TO BE VECTORIZED
-        % Hx
+        
         % Update E Field: UPDATE THESE TO BE VECTORIZED
 
         % Inject Source
