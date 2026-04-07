@@ -5,7 +5,7 @@ c = 299792458;
 mu0 = (4*pi)*10^-7;
 eps0 = (c*sqrt(mu0))^-2;
 num_dims = 3;
-R_Earth = 6371; % km
+R_Earth = 6371 * 1E3; % m
 
 
 f_max = NaN;
@@ -51,7 +51,7 @@ end
 % ocean propagation)
 
 while isnan(dist_max)
-    dist_max = input('Enter the maximum distance in range (km): ', "s");
+    dist_max = input('Enter the maximum distance in range (m): ', "s");
     dist_max = str2double(dist_max);
     if isnan(dist_max)
         disp('Nice try, thats not a number...')
@@ -59,7 +59,7 @@ while isnan(dist_max)
 end
 
 while isnan(width_max)
-    width_max = input('Enter the maximum width of simulation (km): ', "s");
+    width_max = input('Enter the maximum width of simulation (m): ', "s");
     width_max = str2double(width_max);
     if isnan(width_max)
         disp('Nice try, thats not a number...')
@@ -67,7 +67,7 @@ while isnan(width_max)
 end
 
 while isnan(height_max)
-    height_max = input('Enter the maximum height of simulation (km): ', "s");
+    height_max = input('Enter the maximum height of simulation (m): ', "s");
     height_max = str2double(height_max);
     if isnan(height_max)
         disp('Nice try, thats not a number...')
@@ -82,7 +82,7 @@ end
 % Additional input: depth below surface
 below_ground = NaN;
 while isnan(below_ground)
-    below_ground = input('Enter the depth below the surface (km): ', "s");
+    below_ground = input('Enter the depth below the surface (m): ', "s");
     below_ground = str2double(below_ground);
     if isnan(below_ground) || below_ground < 0
         below_ground = NaN;
@@ -171,7 +171,7 @@ lam_min    = c/f_max;
 v_p        = lam_min*f_max;
 
 %Grid Dispersion Error req ds << lambda
-ds = lam_min/200; 
+ds = lam_min/10; 
 
 theta_temp = theta_min:0.0001:theta_max; %radians;
 
@@ -192,6 +192,11 @@ E_phi = zeros(Nr, Nthe, Nphi-1);
 H_r = zeros(Nr, Nthe-1, Nphi-1);
 H_the = zeros(Nr-1, Nthe, Nphi-1);
 H_phi = zeros(Nr-1, Nthe-1, Nphi);
+
+%% Establish time step using CFL Criterion
+
+%correct to spherical coord version
+del_t = c/ds
 
 %% Create Spatial Property Matrices
 % Material Properties are defined at the 
@@ -251,6 +256,7 @@ CErH       = (del_t./ (eps_r + sigma_r*(del_t/2)));
 CEtheH     = (del_t./ (eps_the + sigma_the*(del_t/2)));
 CEphiH     = (del_t./ (eps_phi + sigma_phi*(del_t/2)));
 
+%Need to precompute the H component multiplier CHr, CHthe, and CHphi
 
 clear eps_r eps_the eps_phi sigma_r sigma_the sigma_phi ...
     eps_cell sigma_cell mu_cell
@@ -258,18 +264,18 @@ clear eps_r eps_the eps_phi sigma_r sigma_the sigma_phi ...
 
 %% Create Fields
 
-if num_dims == 3
-    for t = 0:num_steps
-        tic
-        % Update H Field : UPDATE THESE TO BE VECTORIZED
-        
-        % Update E Field: UPDATE THESE TO BE VECTORIZED
+for t = 0:num_steps
+    tic
+    % Update H Field : UPDATE THESE TO BE VECTORIZED
 
-        % Inject Source
-        
-        % Probe the fields
-        toc
-    end
+    Hr = Hr + CHr*(  )
+
+    % Update E Field: UPDATE THESE TO BE VECTORIZED
+
+    % Inject Source
+    
+    % Probe the fields
+    toc
 end
 
 %%
