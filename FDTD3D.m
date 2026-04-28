@@ -46,8 +46,8 @@ lam0_min = c/f_max;
 lam_min = lam0_min/sqrt(max(max(max(epsr))));
 v_p = lam_min*f_max;
 
-%Grid Dispersion Error req ds << lambda
-ds = lam_min/10; 
+%Grid Dispersion Error req ds << lambda 
+ds = lam_min/29; 
 
 % Change this if needed one at a time, otherwise we will assume they are all uniform
 if num_dims == 1
