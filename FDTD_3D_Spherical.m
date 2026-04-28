@@ -171,7 +171,7 @@ lam_min    = c/f_max;
 v_p        = lam_min*f_max;
 
 %Grid Dispersion Error req ds << lambda
-ds = lam_min/10; 
+ds = lam_min/100; 
 
 theta_temp = theta_min:0.0001:theta_max; %radians;
 
@@ -185,24 +185,24 @@ Nr         = ceil((r_outer-r_inner)/del_r);
 Nthe       = ceil(abs(theta_max-theta_min)/del_the);
 Nphi       = ceil(abs(phi_start-phi_end)/del_phi);
 
-E_r = zeros(Nr-1, Nthe, Nphi);
-E_the = zeros(Nr, Nthe-1, Nphi);
-E_phi = zeros(Nr, Nthe, Nphi-1);
+E_r = rand(Nr-1, Nthe, Nphi);
+E_the = rand(Nr, Nthe-1, Nphi);
+E_phi = rand(Nr, Nthe, Nphi-1);
 
-H_r = zeros(Nr, Nthe-1, Nphi-1);
-H_the = zeros(Nr-1, Nthe, Nphi-1);
-H_phi = zeros(Nr-1, Nthe-1, Nphi);
+H_r = rand(Nr, Nthe-1, Nphi-1);
+H_the = rand(Nr-1, Nthe, Nphi-1);
+H_phi = rand(Nr-1, Nthe-1, Nphi);
 
 %% Establish time step using CFL Criterion
 
 %correct to spherical coord version
-del_t = c/ds
+del_t = (1/c)/sqrt((1/(del_r)^2) + (1/(r_inner*del_the)^2) + (1/(r_inner*sin(theta_min)*del_phi)^2));
 
 %% Create Spatial Property Matrices
 % Material Properties are defined at the 
 % center of cell volumes in spherical grid
-eps_cell   = ones(Nr+2,Nthe+2,Nphi+2); % sweeps from 0:Nr+1
-sigma_cell = zeros(Nr+2,Nthe+2,Nphi+2); % sweeps from 0:Nr+1
+eps_cell   = rand(Nr+2,Nthe+2,Nphi+2); % sweeps from 0:Nr+1
+sigma_cell = rand(Nr+2,Nthe+2,Nphi+2); % sweeps from 0:Nr+1
 % Use these to interpolate to the larger space
 eps_r      = 0.25 * (eps_cell(2:Nr+2,2:Nthe+2,2:Nphi+2)...
                 + eps_cell(2:Nr+2,1:Nthe+1,2:Nphi+2)...
@@ -234,7 +234,7 @@ sigma_phi  = 0.25 * (sigma_cell(2:Nr+2,2:Nthe+2,2:Nphi+2)...
                  + sigma_cell(2:Nr+2,1:Nthe+1,2:Nphi+2)...
                  + sigma_cell(1:Nr+1,1:Nthe+1,2:Nphi+2));
 
-mu_cell    = ones(Nr+2,Nthe+2,Nphi+2); % sweeps from 0:Nr+1 (instead defined by 1:Nr+2)
+mu_cell    = rand(Nr+2,Nthe+2,Nphi+2); % sweeps from 0:Nr+1 (instead defined by 1:Nr+2)
 
 mu_r       = 0.5 * (mu_cell(2:Nr+2,2:Nthe+2,2:Nphi+2))...
                 + mu_cell(1:Nr+1,2:Nthe+2,2:Nphi+2);
@@ -245,7 +245,7 @@ mu_the       = 0.5 * (mu_cell(2:Nr+2,2:Nthe+2,2:Nphi+2))...
 mu_phi       = 0.5 * (mu_cell(2:Nr+2,2:Nthe+2,2:Nphi+2))...
                 + mu_cell(2:Nr+2,2:Nthe+2,1:Nphi+1);
 
-
+%Precompute Constants to save resources, takes more ram
 CErE       = (1 - sigma_r*del_t./(2*eps_r)) ./...
                 (1 + sigma_r*del_t./(2*eps_r));
 CEtheE     = (1 - sigma_the*del_t./(2*eps_the)) ./...
