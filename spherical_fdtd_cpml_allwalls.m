@@ -41,8 +41,8 @@ R_Earth = 6371e3;
 %% ============================================================
 f_max        = 500e3;
 start_point  = [0.0, 0.0];
-dist_max     = 80e3;
-width_max    = 8e3;
+dist_max     = 40e3;
+width_max    = 7e3;
 height_max   = 5e3;
 below_ground = 0; % need to be careful to ensure that this doesnt put the surface of the earth in the wrong spot
 
@@ -196,9 +196,13 @@ dphys_phi = R_Earth * sin(pi/2) * del_phi;
 % sigma_max_r   = (cpml_m+1) / (150*pi*dphys_r);
 % sigma_max_the = (cpml_m+1) / (150*pi*dphys_the);
 % sigma_max_phi = (cpml_m+1) / (150*pi*dphys_phi);
-sigma_max_r   = - (cpml_m+1) * log(10E-16) / (2*120*pi*dphys_r);
-sigma_max_the = - (cpml_m+1) * log(10E-16) / (2*120*pi*dphys_the);
-sigma_max_phi = - (cpml_m+1) * log(10E-16) / (2*120*pi*dphys_phi);
+sigma_max_r   = - 0.25 * 5 * (cpml_m+1) * log(10E-6) / (2*120*pi*dphys_r);
+sigma_max_the = - 0.25 * (cpml_m+1) * log(10E-6) / (2*120*pi*dphys_the);
+sigma_max_phi = - 0.25 * (cpml_m+1) * log(10E-6) / (2*120*pi*dphys_phi);
+
+disp(sigma_max_r)
+disp(sigma_max_the)
+disp(sigma_max_phi)
 
 % Build per-coordinate profiles (both staggerings, ramps at enabled ends)
 [b_r_int,   a_r_int,   kap_r_int,   b_r_half,   a_r_half,   kap_r_half] = ...
@@ -287,6 +291,25 @@ psi_Hr_th      = zeros(Nr,   Lth_n,  Nphi-1);  % dH_r/dth        at E_phi
 
 fprintf('CPML enabled walls: W=%d E=%d N=%d S=%d Top=%d (cells)\n', ...
         cpml_ct_west, cpml_ct_east, cpml_ct_north, cpml_ct_south, cpml_ct_top);
+%% ============================================================
+%% TEST SOURCE: charge-neutral soft source (differentiated Gaussian)
+%% ============================================================
+% Use this INSTEAD of the MTLE source for validating propagation/CPML/SIBC.
+% Zero-time-integral waveform -> no charge accumulation, no static field.
+test_source_enabled = false;     % set false to use the MTLE source instead
+
+% Center the spectrum in your band of interest:
+test_f0   = 200e3;              % spectral peak [Hz] (in your 100-300 kHz band)
+test_tau  = 1/(2*pi*test_f0);  % Gaussian width giving that peak
+test_t0   = 6*test_tau;        % delay so the pulse starts ~from zero (6 sigma)
+test_amp  = 1.0;               % amplitude scaling (arbitrary for a test)
+
+% Where to inject (a single point, a few cells off the boundaries/source col):
+test_i = round(Nr/2);          % mid-height (well away from top/bottom)
+test_j = round(Nthe/2);        % mid-theta
+test_k = round(Nphi/2);        % mid-phi (well inside, away from CPML walls)
+fprintf('TEST soft source: f0=%.0f kHz, tau=%.3e s, at (i,j,k)=(%d,%d,%d)\n', ...
+        test_f0/1e3, test_tau, test_i, test_j, test_k);
 
 %% ============================================================
 %% MTLE source setup
@@ -319,10 +342,11 @@ lambda_decay = 1e3;
 i_0 = @(t) channel_base_current(t);
 mtle_current = @(z, t) (t >= z./v_return) .* i_0(t - z./v_return) .* exp(-z./lambda_decay);
 
+
 %% ============================================================
 %% Probe setup
 %% ============================================================
-probe_ranges_km = [1, 2.5, 5.0, 7.5, 50];
+probe_ranges_km = [1, 5, 10, 20, 38];
 probe_k_indices = zeros(size(probe_ranges_km));
 for p = 1:length(probe_ranges_km)
     delta_phi = probe_ranges_km(p)*1e3 / (R_Earth * cos(lat0_rad));
@@ -339,7 +363,7 @@ viz_every          = 75; % Normally set to 75, reduced to 5 for testing
 viz_noise_floor    = 1e-6;
 viz_save_pngs      = false;
 viz_png_dir        = './fdtd_frames';
-viz_cross_range_km = 50;
+viz_cross_range_km = dist_max/2E3; % Halfway through the distance
 delta_phi_viz = viz_cross_range_km*1e3 / (R_Earth * cos(lat0_rad));
 [~, viz_k_cross] = min(abs(phi_node - (phi_start + delta_phi_viz)));
 viz_x = (phi_node - phi_start) * R_Earth * cos(lat0_rad) / 1e3;
@@ -364,7 +388,11 @@ for n = 0:num_steps-1
     t_now = n * del_t;
     update_H();
     update_E();
-    apply_source(t_now);
+    if test_source_enabled
+        apply_test_source(t_now);
+    else
+        apply_source(t_now);    % the MTLE source
+    end
     record_probes(n);
     if mod(n, viz_every) == 0
         update_visualization(n, t_now);
@@ -380,10 +408,10 @@ fprintf('\nTotal runtime: %.1f s\n', toc(tic_total));
 %% Post-loop plotting
 %% ============================================================
 figure;
-t_axis = (0:num_steps-1) * del_t * 1e3;
+t_axis_ms = (0:num_steps-1) * del_t * 1e3;
 for p = 1:length(probe_ranges_km)
     subplot(length(probe_ranges_km), 1, p);
-    plot(t_axis, 20*log10(probe_record(:, p))); grid on;
+    plot(t_axis_ms, 20*log10(probe_record(:, p))); grid on;
     % ylim([-40, max(20*log10(probe_record(:, p)))])
     ylabel(sprintf('E_r at %d km', probe_ranges_km(p)));
     if p == length(probe_ranges_km); xlabel('Time (ms)'); end
@@ -395,28 +423,28 @@ f_cut = 100e3;                        % high-pass cutoff (below your 100-300 kHz
 [b, a] = butter(4, f_cut/(fs/2), 'high');   % 4th-order Butterworth high-pass
 
 probe_filtered = zeros(size(probe_record));
-for p = 1:size(probe_record, 2)
+for p = 1:length(probe_ranges_km)
     probe_filtered(:, p) = filtfilt(b, a, probe_record(:, p));
 end
 
 % Compare raw vs filtered at one probe
 figure;
-subplot(2,3,1); plot((0:num_steps-1)*del_t*1e6, probe_record(:,1));
-title('Raw E_r (static + radiation)' + probe_ranges_km(1)); ylabel('E_r'); grid on;
-subplot(2,3,4); plot((0:num_steps-1)*del_t*1e6, probe_filtered(:,1));
-title('High-pass filtered (radiation only)'); xlabel('Time (\mus)'); ylabel('E_r'); grid on;
-subplot(2,3,2); plot((0:num_steps-1)*del_t*1e6, probe_record(:,2));
-title('Raw E_r (static + radiation)' + probe_ranges_km(2)); ylabel('E_r'); grid on;
-subplot(2,3,5); plot((0:num_steps-1)*del_t*1e6, probe_filtered(:,2));
-title('High-pass filtered (radiation only)'); xlabel('Time (\mus)'); ylabel('E_r'); grid on;
-subplot(2,3,3); plot((0:num_steps-1)*del_t*1e6, probe_record(:,3));
-title('Raw E_r (static + radiation)' + probe_ranges_km(3)); ylabel('E_r'); grid on;
-subplot(2,3,6); plot((0:num_steps-1)*del_t*1e6, probe_filtered(:,3));
-title('High-pass filtered (radiation only)'); xlabel('Time (\mus)'); ylabel('E_r'); grid on;
-
-
+t_axis_us = (0:num_steps-1) * del_t * 1e6;
+for p = 1:length(probe_ranges_km)
+    subplot(2,length(probe_ranges_km),p); 
+    plot(t_axis_us, probe_record(:,p));
+    title(sprintf('Raw E_r (static + radiation) at %d km', probe_ranges_km(p))); 
+    ylabel('E_r'); grid on;
+    subplot(2,length(probe_ranges_km),p+length(probe_ranges_km)); 
+    plot(t_axis_us, probe_filtered(:,p));
+    title('High-pass filtered (radiation only)'); 
+    xlabel('Time (\mus)'); ylabel('E_r'); grid on;
+end
+sgtitle('E_r probes vs time at various ranges from source filtered');
+%% Current Waveform
 t_vec = (0:num_steps-1) * del_t;
 i0_vec = arrayfun(@(tt) channel_base_current(tt), t_vec);
+
 figure; plot(t_vec*1e6, i0_vec/1e3);
 xlabel('Time (\mus)'); ylabel('i(0,t) [kA]');
 title('Channel-base current waveform');
@@ -514,6 +542,13 @@ function apply_source(t_now)
     sigma_src_line = sigma_cell_r(src_i_range(:));
     src_injection  = -(del_t ./ (eps_src_line(:) + sigma_src_line(:).*del_t/2)) .* J_r_src;
     E_r(src_i_range, src_j, src_k) = E_r(src_i_range, src_j, src_k) + reshape(src_injection, [], 1, 1);
+end
+
+function apply_test_source(t_now)
+    % Soft additive source into E_r at a single interior point.
+    % Additive (+=) so it does not act as a hard scatterer.
+    src_val = diff_gaussian(t_now, test_t0, test_tau, test_amp);
+    E_r(test_i, test_j, test_k) = E_r(test_i, test_j, test_k) + src_val;
 end
 
 function record_probes(n)
@@ -649,4 +684,10 @@ function i = channel_base_current(t)
     term2 = exp(-t_safe./taur);
     i = I0 .* (term1 - term2);
     i(t < 0) = 0;
+end
+
+function f = diff_gaussian(t, t0, tau, amp)
+    % First derivative of a Gaussian: zero time-integral (charge-neutral),
+    % spectrum peaked at 1/(2*pi*tau), no DC content.
+    f = -amp * (t - t0) ./ (tau^2) .* exp(-((t - t0).^2) ./ (2*tau^2));
 end
