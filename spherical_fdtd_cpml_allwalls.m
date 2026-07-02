@@ -308,8 +308,10 @@ test_amp  = 1.0;               % amplitude scaling (arbitrary for a test)
 test_i = round(Nr/2);          % mid-height (well away from top/bottom)
 test_j = round(Nthe/2);        % mid-theta
 test_k = round(Nphi/2);        % mid-phi (well inside, away from CPML walls)
-fprintf('TEST soft source: f0=%.0f kHz, tau=%.3e s, at (i,j,k)=(%d,%d,%d)\n', ...
+if test_source_enabled
+    fprintf('TEST soft source: f0=%.0f kHz, tau=%.3e s, at (i,j,k)=(%d,%d,%d)\n', ...
         test_f0/1e3, test_tau, test_i, test_j, test_k);
+end
 
 %% ============================================================
 %% MTLE source setup
@@ -419,12 +421,14 @@ end
 sgtitle('E_r probes vs time at various ranges from source');
 %% Probe Filtered
 fs = 1/del_t;                        % sampling frequency
-f_cut = 100e3;                        % high-pass cutoff (below your 100-300 kHz band)
-[b, a] = butter(4, f_cut/(fs/2), 'high');   % 4th-order Butterworth high-pass
-
+fLo = 100e3; fHi = 300e3;                          % band-pass cutoff (below your 100-300 kHz band)
+% [b, a] = butter(4, [fLo fHi], 'bandpass');   % 6th-order Butterworth bandpass
+[z,p,k] = butter(6, [fLo fHi]/(fs/2), 'bandpass');
+[sos,g] = zp2sos(z,p,k);
+F
 probe_filtered = zeros(size(probe_record));
 for p = 1:length(probe_ranges_km)
-    probe_filtered(:, p) = filtfilt(b, a, probe_record(:, p));
+    probe_filtered(:, p) = filtfilt(sos, g, probe_record(:, p));
 end
 
 % Compare raw vs filtered at one probe
@@ -441,6 +445,20 @@ for p = 1:length(probe_ranges_km)
     xlabel('Time (\mus)'); ylabel('E_r'); grid on;
 end
 sgtitle('E_r probes vs time at various ranges from source filtered');
+
+%% Probe Spectral Content (PSD or Spectrogram)
+figure;
+t_axis_us = (0:num_steps-1) * del_t * 1e6;
+for p = 1:length(probe_ranges_km)
+    subplot(1,length(probe_ranges_km),p)
+    spectrogram(probe_filtered(:,p));
+end
+sgtitle('E_r probes vs time at various ranges from source filtered');
+
+validSaveName = matlab.lang.makeValidName("probe_data" +  string(datetime("now")) +  ".mat");
+save(validSaveName, 'probe_record', 'del_t', 'probe_ranges_km', ...
+    'cpml_ct_top','cpml_ct_bottom','cpml_ct_east', ...
+    'cpml_ct_west','cpml_ct_north','cpml_ct_south')
 %% Current Waveform
 t_vec = (0:num_steps-1) * del_t;
 i0_vec = arrayfun(@(tt) channel_base_current(tt), t_vec);
@@ -449,6 +467,19 @@ figure; plot(t_vec*1e6, i0_vec/1e3);
 xlabel('Time (\mus)'); ylabel('i(0,t) [kA]');
 title('Channel-base current waveform');
 
+figure;
+Fs = 1 / del_t;
+N = length(i0_vec);
+xdft = fft(i0_vec);
+xdft = xdft(1:N/2+1);
+psdx = (1/(Fs*N)) * abs(xdft).^2;
+psdx(2:end-1) = 2*psdx(2:end-1);
+freq = 0:Fs/length(yd):Fs/2;
+plot(freq/1E3,pow2db(psdx),'Linewidth',2)
+grid on
+title("Periodogram of MTLE Current Waveform")
+xlabel("Frequency (kHz)")
+ylabel("Power/Frequency (dB/Hz)")
 %% ============================================================
 %% NESTED FUNCTIONS
 %% ============================================================
