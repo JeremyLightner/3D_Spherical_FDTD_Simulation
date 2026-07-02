@@ -345,15 +345,53 @@ end
 % with a sum of recursive accumulators Psi_k (Psi_k <- Q_k Psi_k + S_k H). The
 % skeleton "explicit update, then (.+history)/c2 on the i=1 rows" is unchanged.
 
-sibc_enabled = false;        % set false to revert to PEC bottom
-sibc_f0      = 200e3;       % monochromatic design frequency [Hz] (in-band)
+sibc_enabled = false;       % set true to enable SIBC (false = PEC bottom)
+sibc_mode    = 'conv';      % 'mono' (single-freq) or 'conv' (dispersive)   <== NEW
+sibc_f0      = 200e3;       % monochromatic design frequency [Hz] ('mono' only)
 sibc_sigma   = 4.0;         % seawater conductivity [S/m] (match GRWAVE run)
 
+% ---- geometric coupling (shared by both modes) ----   <== NEW (shared)
+% g = dt * r_node(1) / (mu0 * r_half(1) * dr); coefficient on E_surf in the
+% Faraday correction  H(1) += g * E_surf.
+sibc_g = del_t * r_node(1) / (mu0 * r_half(1) * del_r);
+
+% ---- monochromatic coefficients ('mono' mode) ----   (unchanged math)
 sibc_w0 = 2*pi*sibc_f0;
 sibc_Rs = sqrt(sibc_w0 * mu0 / (2*sibc_sigma));          % surface resistance [ohm]
-sibc_delta = del_t * sibc_Rs * r_node(1) / (mu0 * r_half(1) * del_r);
+sibc_delta = sibc_g * sibc_Rs;                           % = dt*Rs*r1/(mu0*rh1*dr)
 sibc_c1 = sibc_delta * ( 1/(sibc_w0*del_t) - 0.5 );
 sibc_c2 = 1 + sibc_delta/2 + sibc_delta/(sibc_w0*del_t);
+
+% ================= CONVOLUTIONAL SIBC ('conv' mode) =====================  <== NEW BLOCK
+% Dispersive surface impedance via recursive convolution. Z_s(s) is fit by a
+% rational (pole/residue) function -- from Vector Fitting (vectfit3.m) of the
+% good-conductor Z_s(w)=sqrt(j w mu0/sigma) over your band (100-300 kHz + low
+% tail). Each pole gives one recursive accumulator (like a CPML psi):
+%   Psi_k^n = Q_k Psi_k^{n-1} + S_k H^{n-1/2}      (causal -> EXPLICIT)
+%   E_surf^n = -[ Z_inf H^n + sum_k Psi_k^n ]
+%   Q_k = exp(p_k dt),  S_k = c_k (exp(p_k dt) - 1)/p_k
+% Poles p_k must be in the LEFT half-plane (Re(p_k)<0) for stability/passivity.
+%
+%   <<< REPLACE THESE PLACEHOLDER POLES WITH YOUR vectfit3 OUTPUT >>>
+% Column vectors, conjugate pairs included so the accumulator sum is real. The
+% placeholder is a crude 1-pole stand-in ONLY so the code runs; it is NOT an
+% accurate fit of sqrt(jw) and WILL give wrong attenuation.
+sibc_poles = [ -2*pi*200e3 ];            % p_k [rad/s] (Np x 1, complex)  PLACEHOLDER
+sibc_res   = [  sibc_Rs * 2*pi*200e3 ];  % c_k [ohm*rad/s]                PLACEHOLDER
+sibc_Zinf  = 0;                          % constant term; 0 for sqrt(s)
+sibc_poles_are_placeholder = true;       % set false once a real fit is inserted
+
+sibc_Np = numel(sibc_poles);
+sibc_Q  = exp(sibc_poles(:) * del_t);                                       % (Np x 1)
+sibc_S  = sibc_res(:) .* (exp(sibc_poles(:)*del_t) - 1) ./ sibc_poles(:);   % (Np x 1)
+sibc_Qb = reshape(sibc_Q, [sibc_Np 1 1]);   % broadcast shapes for accumulators
+sibc_Sb = reshape(sibc_S, [sibc_Np 1 1]);
+sibc_c2conv = 1 + sibc_g * sibc_Zinf / 2;   % implicit denom; =1 when Zinf=0
+
+% Pole accumulators on the surface sheet (Np x tangential face).  <== NEW STATE
+Psi_phi = zeros(sibc_Np, Nthe-1, Nphi  );   % drives E_th  (paired with H_phi)
+Psi_th  = zeros(sibc_Np, Nthe,   Nphi-1);   % drives E_phi (paired with H_th )
+% ========================================================================
 
 % Previous-step surface H (= H^{n-1/2}); rest initial condition -> zero.
 Hth_prev1  = zeros(1, Nthe,   Nphi-1);   % matches H_th(1,:,:)
@@ -368,8 +406,20 @@ if sibc_store_Esurf
 end
 
 if sibc_enabled
-    fprintf('SIBC (contour): f0=%.0f kHz sigma=%.1f S/m R_s=%.4f ohm  delta=%.3e c2=%.5f\n', ...
-            sibc_f0/1e3, sibc_sigma, sibc_Rs, sibc_delta, sibc_c2);
+    fprintf('SIBC (contour) mode=%s  sigma=%.1f S/m  g=%.3e\n', sibc_mode, sibc_sigma, sibc_g);
+    if strcmp(sibc_mode, 'mono')
+        fprintf('   mono: f0=%.0f kHz  R_s=%.4f ohm  c1=%.3e c2=%.5f\n', ...
+                sibc_f0/1e3, sibc_Rs, sibc_c1, sibc_c2);
+    else
+        fprintf('   conv: Np=%d poles  Zinf=%.4g  c2conv=%.5f\n', sibc_Np, sibc_Zinf, sibc_c2conv);
+        if any(real(sibc_poles(:)) >= 0)
+            warning('SIBC conv: pole(s) NOT in left half-plane -> UNSTABLE.');
+        end
+        if sibc_poles_are_placeholder
+            warning(['SIBC conv: PLACEHOLDER poles -- attenuation WILL be wrong. ' ...
+                     'Replace sibc_poles/sibc_res with a vectfit3 fit of Z_s(w).']);
+        end
+    end
 end
 
 %% ============================================================
@@ -632,34 +682,52 @@ function apply_sibc_bottom()
     % Called AFTER update_H(): on entry, H_th(1,:,:) and H_phi(1,:,:) hold the
     % "explicit" (PEC-style) update, because the surface E rows E_th(1,:,:) and
     % E_phi(1,:,:) are held at zero (never written). We correct those rows in
-    % place to the implicit SIBC value:
-    %     H^{n+1/2}(1) = ( H_explicit(1) + c1 * H^{n-1/2}(1) ) / c2
-    % Hth_prev1/Hphi_prev1 hold H^{n-1/2} (zero at rest -> correct from step 1).
+    % place. Hth_prev1/Hphi_prev1 hold surface H^{n-1/2} (zero at rest).
     %
-    % Both tangential H components use the SAME (c1,c2): the radii/dr at i=1 are
-    % identical, and the sign difference between the E_th and E_phi SIBC
+    % Both tangential H components share the same coefficients: the radii/dr at
+    % i=1 are identical, and the sign difference between the E_th and E_phi SIBC
     % relations is cancelled by the opposite curl sign (see header derivation).
 
     Hphi_expl = H_phi(1, :, :);     % H_explicit^{n+1/2}, (1,Nthe-1,Nphi)
     Hth_expl  = H_th(1, :, :);      % H_explicit^{n+1/2}, (1,Nthe,Nphi-1)
 
-    Hphi_new = (Hphi_expl + sibc_c1 * Hphi_prev1) / sibc_c2;
-    Hth_new  = (Hth_expl  + sibc_c1 * Hth_prev1 ) / sibc_c2;
+    if strcmp(sibc_mode, 'mono')
+        % -------- MONOCHROMATIC (single-freq, implicit) --------
+        %   H^{n+1/2}(1) = ( H_expl(1) + c1 * H^{n-1/2}(1) ) / c2
+        Hphi_new = (Hphi_expl + sibc_c1 * Hphi_prev1) / sibc_c2;
+        Hth_new  = (Hth_expl  + sibc_c1 * Hth_prev1 ) / sibc_c2;
+
+        if sibc_store_Esurf
+            dHphi_dt = (Hphi_new - Hphi_prev1) / del_t;
+            dHth_dt  = (Hth_new  - Hth_prev1 ) / del_t;
+            Eth_surf_diag  = -sibc_Rs * ( 0.5*(Hphi_new + Hphi_prev1) + dHphi_dt/sibc_w0 );
+            Ephi_surf_diag =  sibc_Rs * ( 0.5*(Hth_new  + Hth_prev1 ) + dHth_dt /sibc_w0 );
+        end
+
+    else
+        % -------- CONVOLUTIONAL (dispersive, causal -> explicit) --------   <== NEW PATH
+        % 1) Advance pole accumulators to step n using surface H^{n-1/2} (=prev):
+        Psi_phi = sibc_Qb .* Psi_phi + sibc_Sb .* Hphi_prev1;   % (Np,Nthe-1,Nphi)
+        Psi_th  = sibc_Qb .* Psi_th  + sibc_Sb .* Hth_prev1;    % (Np,Nthe,Nphi-1)
+
+        % 2) Surface E from convolution history (real part of the pole sum):
+        sumPsi_phi = real(sum(Psi_phi, 1));   % (1,Nthe-1,Nphi)
+        sumPsi_th  = real(sum(Psi_th , 1));   % (1,Nthe,Nphi-1)
+
+        % 3) Explicit surface-H correction (c2conv=1 unless Zinf~=0):
+        Hphi_new = (Hphi_expl - sibc_g*(sibc_Zinf/2)*Hphi_prev1 - sibc_g*sumPsi_phi) / sibc_c2conv;
+        Hth_new  = (Hth_expl  - sibc_g*(sibc_Zinf/2)*Hth_prev1  - sibc_g*sumPsi_th ) / sibc_c2conv;
+
+        if sibc_store_Esurf
+            Eth_surf_diag  = -( sibc_Zinf*0.5*(Hphi_new+Hphi_prev1) + sumPsi_phi );
+            Ephi_surf_diag =  ( sibc_Zinf*0.5*(Hth_new +Hth_prev1 ) + sumPsi_th  );
+        end
+    end
 
     H_phi(1, :, :) = Hphi_new;
     H_th(1, :, :)  = Hth_new;
 
-    % Optional diagnostic surface tangential E (time-centered at n). NOT written
-    % into E_th/E_phi(1,:,:) -- those stay zero so update_H does not double-count.
-    if sibc_store_Esurf
-        dHphi_dt = (Hphi_new - Hphi_prev1) / del_t;
-        dHth_dt  = (Hth_new  - Hth_prev1 ) / del_t;
-        % E_th  = -Z_s * H_phi ;  E_phi = +Z_s * H_th  (n-centered)
-        Eth_surf_diag  = -sibc_Rs * ( 0.5*(Hphi_new + Hphi_prev1) + dHphi_dt/sibc_w0 );
-        Ephi_surf_diag =  sibc_Rs * ( 0.5*(Hth_new  + Hth_prev1 ) + dHth_dt /sibc_w0 );
-    end
-
-    % Store corrected H^{n+1/2} -> becomes H^{n-1/2} next step.
+    % Store corrected H^{n+1/2} -> becomes H^{n-1/2} next step (both modes).
     Hphi_prev1 = Hphi_new;
     Hth_prev1  = Hth_new;
 end
