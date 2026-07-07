@@ -535,7 +535,6 @@ fLo = 100e3; fHi = 300e3;                          % band-pass cutoff (below you
 % [b, a] = butter(4, [fLo fHi], 'bandpass');   % 6th-order Butterworth bandpass
 [z,p,k] = butter(6, [fLo fHi]/(fs/2), 'bandpass');
 [sos,g] = zp2sos(z,p,k);
-F
 probe_filtered = zeros(size(probe_record));
 for p = 1:length(probe_ranges_km)
     probe_filtered(:, p) = filtfilt(sos, g, probe_record(:, p));
