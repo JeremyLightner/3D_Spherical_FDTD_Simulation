@@ -41,7 +41,7 @@ R_Earth = 6371e3;
 %% ============================================================
 f_max        = 500e3;
 start_point  = [0.0, 0.0];
-dist_max     = 40e3;
+dist_max     = 100e3;
 width_max    = 7e3;
 height_max   = 5e3;
 below_ground = 0; % need to be careful to ensure that this doesnt put the surface of the earth in the wrong spot
@@ -371,26 +371,73 @@ sibc_c2 = 1 + sibc_delta/2 + sibc_delta/(sibc_w0*del_t);
 %   E_surf^n = -[ Z_inf H^n + sum_k Psi_k^n ]
 %   Q_k = exp(p_k dt),  S_k = c_k (exp(p_k dt) - 1)/p_k
 % Poles p_k must be in the LEFT half-plane (Re(p_k)<0) for stability/passivity.
-%
-%   <<< REPLACE THESE PLACEHOLDER POLES WITH YOUR vectfit3 OUTPUT >>>
-% Column vectors, conjugate pairs included so the accumulator sum is real. The
-% placeholder is a crude 1-pole stand-in ONLY so the code runs; it is NOT an
-% accurate fit of sqrt(jw) and WILL give wrong attenuation.
-sibc_poles = [ -2*pi*200e3 ];            % p_k [rad/s] (Np x 1, complex)  PLACEHOLDER
-sibc_res   = [  sibc_Rs * 2*pi*200e3 ];  % c_k [ohm*rad/s]                PLACEHOLDER
-sibc_Zinf  = 0;                          % constant term; 0 for sqrt(s)
-sibc_poles_are_placeholder = true;       % set false once a real fit is inserted
+
+addpath('D:\GitHub Files\DAIRS Analysis\Simulation Suite\FDTD_Simulation\vfit3')
+
+% ---- sample Z_s on the imaginary axis over the band (+margin) ----
+vf_sigma = sibc_sigma;                          % use the SIBC seawater sigma
+vf_flo   = 1e4;   vf_fhi = 1e6;   vf_Ns = 400;  % 10 kHz - 1 MHz, log-spaced
+vf_w  = 2*pi*logspace(log10(vf_flo), log10(vf_fhi), vf_Ns);
+vf_s  = 1i*vf_w;
+vf_Zs = sqrt(vf_s * mu0 / vf_sigma);
+vf_s  = vf_s(:).';   vf_Zs = vf_Zs(:).';        % row vectors for vectfit3
+
+% ---- options: fit D (const) not E (s-term), enforce stable LHP poles ----
+vf_opts = struct('relax',1,'stable',1,'asymp',2,'skip_pole',0,'skip_res',0, ...
+                 'cmplx_ss',1,'spy',0,'logx',1,'logy',1,'errplot',0,'phaseplot',0);
+
+% ---- initial complex-conjugate pole pairs spread across the band ----
+vf_Np = 6;                                       % number of poles (4-8 typical)
+vf_Npair = floor(vf_Np/2);
+vf_bet = 2*pi*logspace(log10(vf_flo), log10(vf_fhi), vf_Npair);
+vf_p0  = zeros(1, 2*vf_Npair);
+for m = 1:vf_Npair
+    vf_a = -vf_bet(m)*1e-2;
+    vf_p0(2*m-1) = vf_a - 1i*vf_bet(m);
+    vf_p0(2*m  ) = vf_a + 1i*vf_bet(m);
+end
+if mod(vf_Np,2)==1, vf_p0(end+1) = -2*pi*sqrt(vf_flo*vf_fhi); end
+
+% ---- iterate vectfit3 to converge the poles ----
+vf_w1 = ones(1, numel(vf_s));
+vf_poles = vf_p0;
+for vf_it = 1:6
+    [vf_SER, vf_poles, vf_rms] = vectfit3(vf_Zs, vf_s, vf_poles, vf_w1, vf_opts);
+end
+fprintf('VF: %d poles, final rmserr = %.3e\n', vf_Np, vf_rms);
+
+% ---- robust extraction via eigendecomposition (form-independent) ----
+%   fit(s)=C(sI-A)^-1 B + D ; A=V L V^-1 -> p=eig(A), c=(CV).*(V\B), Zinf=D
+vf_A = full(vf_SER.A);  vf_B = full(vf_SER.B);
+vf_C = full(vf_SER.C);  vf_D = full(real(vf_SER.D));
+[vf_V, vf_L] = eig(vf_A);
+sibc_poles = full(diag(vf_L));                   % p_k  (Np x 1, complex pairs)
+sibc_res   = full((vf_C*vf_V).' .* (vf_V\vf_B)); % c_k  (Np x 1, complex)
+sibc_Zinf  = vf_D;                               % constant term
+sibc_poles_are_placeholder = false;
+
+% ---- verify + stability, error out early if bad ----
+vf_rebuilt = sibc_Zinf + sum(sibc_res ./ (vf_s - sibc_poles), 1);
+vf_relerr  = norm(vf_rebuilt - vf_Zs) / norm(vf_Zs);
+vf_maxQ    = max(abs(exp(sibc_poles * del_t)));
+fprintf('VF check: rebuild rel-err=%.3e, poles-in-LHP=%d, max|Q_k|=%.4f\n', ...
+        vf_relerr, all(real(sibc_poles)<0), vf_maxQ);
+assert(all(real(sibc_poles) < 0), 'SIBC fit: pole(s) not in left half-plane.');
+assert(vf_maxQ < 1, 'SIBC fit: max|Q_k| >= 1 -> unstable at this del_t.');
+if vf_relerr > 5e-2
+    warning('SIBC fit: rebuild rel-err %.2e is large; consider more poles (vf_Np).', vf_relerr);
+end
 
 sibc_Np = numel(sibc_poles);
-sibc_Q  = exp(sibc_poles(:) * del_t);                                       % (Np x 1)
-sibc_S  = sibc_res(:) .* (exp(sibc_poles(:)*del_t) - 1) ./ sibc_poles(:);   % (Np x 1)
-sibc_Qb = reshape(sibc_Q, [sibc_Np 1 1]);   % broadcast shapes for accumulators
+sibc_Q  = exp(sibc_poles(:) * del_t);
+sibc_S  = sibc_res(:) .* (exp(sibc_poles(:)*del_t) - 1) ./ sibc_poles(:);
+sibc_Qb = reshape(sibc_Q, [sibc_Np 1 1]);
 sibc_Sb = reshape(sibc_S, [sibc_Np 1 1]);
-sibc_c2conv = 1 + sibc_g * sibc_Zinf / 2;   % implicit denom; =1 when Zinf=0
+sibc_c2conv = 1 + sibc_g * sibc_Zinf / 2;
 
-% Pole accumulators on the surface sheet (Np x tangential face).  <== NEW STATE
-Psi_phi = zeros(sibc_Np, Nthe-1, Nphi  );   % drives E_th  (paired with H_phi)
-Psi_th  = zeros(sibc_Np, Nthe,   Nphi-1);   % drives E_phi (paired with H_th )
+Psi_phi = zeros(sibc_Np, Nthe-1, Nphi  );
+Psi_th  = zeros(sibc_Np, Nthe,   Nphi-1);
+
 % ========================================================================
 
 % Previous-step surface H (= H^{n-1/2}); rest initial condition -> zero.
@@ -457,19 +504,67 @@ mtle_current = @(z, t) (t >= z./v_return) .* i_0(t - z./v_return) .* exp(-z./lam
 %% ============================================================
 %% Probe setup
 %% ============================================================
-probe_ranges_km = [1, 5, 10, 20, 38];
+probe_ranges_km = [1, 5, 10, 20, 38, 45, 55, 70, 80, 90, 95];
 probe_k_indices = zeros(size(probe_ranges_km));
 for p = 1:length(probe_ranges_km)
     delta_phi = probe_ranges_km(p)*1e3 / (R_Earth * cos(lat0_rad));
     [~, probe_k_indices(p)] = min(abs(phi_node - (phi_start + delta_phi)));
 end
+% disp(probe_k_indices)
 probe_i = src_i_ground;
 probe_j = round(Nthe/2);
 probe_record = zeros(num_steps, length(probe_ranges_km));
 
+
+%% ============================================================
+%% PEC scatterer box (perfect conductor on the surface)
+%% ============================================================
+% Grid-aligned perfect-conductor box sitting ON the ocean surface (bottom face
+% at r=R_e, i.e. i=1) and extending upward. Implemented by zeroing the interior
+% + surface-tangential E each step (see apply_pec_box). Because the box is
+% aligned to grid coordinate surfaces, this is EXACT PEC -- no staircasing, and
+% the Yee staggering means normal-E on the faces is handled automatically.
+box_enabled = false;
+
+% ---- physical size / placement (edit these) ----
+box_height_m     = 30;    % radial height above the surface [m]
+box_len_theta_m  = 200;    % N-S extent (theta) [m]
+box_len_phi_m    = 30;    % E-W extent (phi, along propagation) [m]
+box_center_km    = 95;     % range from source along the path (like a probe) [km]
+
+% ---- convert to index ranges (clamped to the grid) ----
+box_i1 = 1;                                              % bottom face at surface
+box_i2 = min(Nr, box_i1 + max(1, round(box_height_m/del_r)));
+
+nCell_the = max(1, round(box_len_theta_m / (R_Earth*del_the)));
+box_jc = probe_j;                                       % centered on the axis
+box_j1 = max(1,    box_jc - floor(nCell_the/2));
+box_j2 = min(Nthe, box_jc + ceil (nCell_the/2));
+
+delta_phi_box = box_center_km*1e3 / (R_Earth * cos(lat0_rad));
+[~, box_kc] = min(abs(phi_node - (phi_start + delta_phi_box)));
+nCell_phi = max(1, round(box_len_phi_m / (R_Earth*sin_the_node(box_jc)*del_phi)));
+box_k1 = max(1,    box_kc - floor(nCell_phi/2));
+box_k2 = min(Nphi, box_kc + ceil (nCell_phi/2));
+
+if box_enabled
+    fprintf(['PEC box: i=%d:%d (%.0f m tall), j=%d:%d (%.0f m long), k=%d:%d (%.0f m long)  ' ...
+             'center %.1f km from source\n'], ...
+            box_i1, box_i2, (box_i2-box_i1)*ds, box_j1, box_j2, ...
+            (box_j2-box_j1)*ds, box_k1, box_k2, (box_k2-box_k1)*ds, box_center_km);
+    % Sanity checks
+    if box_k1 <= src_k && src_k <= box_k2 && box_j1 <= src_j && src_j <= box_j2
+        warning('PEC box OVERLAPS the source column -- move box_center_km or the source.');
+    end
+    if box_i2 <= box_i1 || box_j2 <= box_j1 || box_k2 <= box_k1
+        warning('PEC box is degenerate (a range collapsed) -- increase its size.');
+    end
+end
+
 %% ============================================================
 %% Visualization setup
 %% ============================================================
+viz_enable = false;
 viz_every          = 75; % Normally set to 75, reduced to 5 for testing
 viz_noise_floor    = 1e-6;
 viz_save_pngs      = false;
@@ -505,10 +600,13 @@ for n = 0:num_steps-1
     else
         apply_source(t_now);    % the MTLE source
     end
+    if box_enabled; apply_pec_box(); end   % PEC scatterer: zero E in the box
     record_probes(n);
-    if mod(n, viz_every) == 0
-        update_visualization(n, t_now);
-        drawnow limitrate;
+    if viz_enable == true
+        if mod(n, viz_every) == 0
+            update_visualization(n, t_now);
+            drawnow limitrate;
+        end
     end
     if mod(n, report_every) == 0
         report_progress(n, tic_total);
@@ -535,6 +633,7 @@ fLo = 100e3; fHi = 300e3;                          % band-pass cutoff (below you
 % [b, a] = butter(4, [fLo fHi], 'bandpass');   % 6th-order Butterworth bandpass
 [z,p,k] = butter(6, [fLo fHi]/(fs/2), 'bandpass');
 [sos,g] = zp2sos(z,p,k);
+
 probe_filtered = zeros(size(probe_record));
 for p = 1:length(probe_ranges_km)
     probe_filtered(:, p) = filtfilt(sos, g, probe_record(:, p));
@@ -563,7 +662,7 @@ for p = 1:length(probe_ranges_km)
     spectrogram(probe_filtered(:,p));
 end
 sgtitle('E_r probes vs time at various ranges from source filtered');
-validSaveName = matlab.lang.makeValidName("probe_data" +  string(datetime("now")) +  ".mat");
+validSaveName = matlab.lang.makeValidName("probe_data" +  string(datetime("now")));
 save(validSaveName, 'probe_record', 'del_t', 'probe_ranges_km', ...
     'sibc_enabled','cpml_ct_top','cpml_ct_bottom','cpml_ct_east', ...
     'cpml_ct_west','cpml_ct_north','cpml_ct_south')
@@ -729,6 +828,19 @@ function apply_sibc_bottom()
     % Store corrected H^{n+1/2} -> becomes H^{n-1/2} next step (both modes).
     Hphi_prev1 = Hphi_new;
     Hth_prev1  = Hth_new;
+end
+
+function apply_pec_box()
+    % Perfect-conductor box: zero the interior + surface-tangential E each step.
+    % Called AFTER update_E (and the source) so this is the final word on E in
+    % the box region. Grid-aligned -> exact PEC. The three sub-ranges follow
+    % from the Yee staggering (see header): each zeros the E-components whose
+    % staggered location lies within the closed box, which enforces tangential
+    % E = 0 on every face and E = 0 in the interior, while leaving the normal-E
+    % just outside each face untouched (it lives at a half-position outside).
+    E_r  (box_i1:box_i2-1, box_j1:box_j2,   box_k1:box_k2  ) = 0;  % E_r  @ r_half
+    E_th (box_i1:box_i2,   box_j1:box_j2-1, box_k1:box_k2  ) = 0;  % E_th @ the_half
+    E_phi(box_i1:box_i2,   box_j1:box_j2,   box_k1:box_k2-1) = 0;  % E_phi@ phi_half
 end
 
 function apply_source(t_now)
