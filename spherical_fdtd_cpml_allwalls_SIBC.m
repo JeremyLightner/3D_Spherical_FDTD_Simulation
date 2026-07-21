@@ -41,7 +41,7 @@ R_Earth = 6371e3;
 %% ============================================================
 f_max        = 500e3;
 start_point  = [0.0, 0.0];
-dist_max     = 100e3;
+dist_max     = 80e3;
 width_max    = 7e3;
 height_max   = 5e3;
 below_ground = 0; % need to be careful to ensure that this doesnt put the surface of the earth in the wrong spot
@@ -345,7 +345,7 @@ end
 % with a sum of recursive accumulators Psi_k (Psi_k <- Q_k Psi_k + S_k H). The
 % skeleton "explicit update, then (.+history)/c2 on the i=1 rows" is unchanged.
 
-sibc_enabled = false;       % set true to enable SIBC (false = PEC bottom)
+sibc_enabled = true;       % set true to enable SIBC (false = PEC bottom)
 sibc_mode    = 'conv';      % 'mono' (single-freq) or 'conv' (dispersive)   <== NEW
 sibc_f0      = 200e3;       % monochromatic design frequency [Hz] ('mono' only)
 sibc_sigma   = 4.0;         % seawater conductivity [S/m] (match GRWAVE run)
@@ -504,7 +504,7 @@ mtle_current = @(z, t) (t >= z./v_return) .* i_0(t - z./v_return) .* exp(-z./lam
 %% ============================================================
 %% Probe setup
 %% ============================================================
-probe_ranges_km = [1, 5, 10, 20, 38, 45, 55, 70, 80, 90, 95];
+probe_ranges_km = [1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75];
 probe_k_indices = zeros(size(probe_ranges_km));
 for p = 1:length(probe_ranges_km)
     delta_phi = probe_ranges_km(p)*1e3 / (R_Earth * cos(lat0_rad));
@@ -524,13 +524,13 @@ probe_record = zeros(num_steps, length(probe_ranges_km));
 % + surface-tangential E each step (see apply_pec_box). Because the box is
 % aligned to grid coordinate surfaces, this is EXACT PEC -- no staircasing, and
 % the Yee staggering means normal-E on the faces is handled automatically.
-box_enabled = false;
+box_enabled = true;
 
 % ---- physical size / placement (edit these) ----
 box_height_m     = 30;    % radial height above the surface [m]
 box_len_theta_m  = 200;    % N-S extent (theta) [m]
 box_len_phi_m    = 30;    % E-W extent (phi, along propagation) [m]
-box_center_km    = 95;     % range from source along the path (like a probe) [km]
+box_center_km    = 45;     % range from source along the path (like a probe) [km]
 
 % ---- convert to index ranges (clamped to the grid) ----
 box_i1 = 1;                                              % bottom face at surface
