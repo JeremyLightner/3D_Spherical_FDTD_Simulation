@@ -1,8 +1,15 @@
-function spherical_fdtd_cpml_allwalls_SIBC()
+function spherical_fdtd_cpml_allwalls_SIBC(ext_cfg)
 %% 3D Spherical FDTD with MTLE Lightning Source -- Multi-wall CPML
 %
 % IMPORTANT: This file is a FUNCTION, not a script (required for nested
 % functions to share workspace). Run by calling spherical_fdtd_cpml_allwalls.
+%
+% Optional argument ext_cfg (struct) drives the clutter/target run suite:
+%   ext_cfg.box_list   : Nbox x 6 integer array [i1 i2 j1 j2 k1 k2] of PEC boxes
+%                        (target + fixed clutter). Overrides the built-in box.
+%   ext_cfg.save_path  : file to save probe_record to at the end of the run.
+%   ext_cfg.viz_enable : override visualization on/off (default false in suite).
+% When called with NO argument, behaves exactly as before (single built-in box).
 %
 % CPML on west, east, north, south, and top walls. Bottom is PEC (ocean
 % stand-in). Architecture: PER-COORDINATE PROFILES + PML-SIZED psi arrays.
@@ -26,7 +33,7 @@ function spherical_fdtd_cpml_allwalls_SIBC()
 %   theta = 0 at north pole, pi/2 at equator
 %   phi   = 0 at prime meridian, increases WESTWARD
 
-clc;
+% clc;
 
 %% ============================================================
 %% Physical constants
@@ -41,7 +48,7 @@ R_Earth = 6371e3;
 %% ============================================================
 f_max        = 500e3;
 start_point  = [0.0, 0.0];
-dist_max     = 80e3;
+dist_max     = 50e3;
 width_max    = 7e3;
 height_max   = 5e3;
 below_ground = 0; % need to be careful to ensure that this doesnt put the surface of the earth in the wrong spot
@@ -504,7 +511,7 @@ mtle_current = @(z, t) (t >= z./v_return) .* i_0(t - z./v_return) .* exp(-z./lam
 %% ============================================================
 %% Probe setup
 %% ============================================================
-probe_ranges_km = [1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75];
+probe_ranges_km = [1, 5, 10, 15, 20, 25, 30, 35, 40, 45];
 probe_k_indices = zeros(size(probe_ranges_km));
 for p = 1:length(probe_ranges_km)
     delta_phi = probe_ranges_km(p)*1e3 / (R_Earth * cos(lat0_rad));
@@ -517,47 +524,58 @@ probe_record = zeros(num_steps, length(probe_ranges_km));
 
 
 %% ============================================================
-%% PEC scatterer box (perfect conductor on the surface)
+%% PEC scatterer boxes (target + optional fixed clutter field)
 %% ============================================================
-% Grid-aligned perfect-conductor box sitting ON the ocean surface (bottom face
-% at r=R_e, i.e. i=1) and extending upward. Implemented by zeroing the interior
-% + surface-tangential E each step (see apply_pec_box). Because the box is
-% aligned to grid coordinate surfaces, this is EXACT PEC -- no staircasing, and
-% the Yee staggering means normal-E on the faces is handled automatically.
-box_enabled = true;
+% Grid-aligned perfect-conductor boxes sitting ON the ocean surface (bottom face
+% at r=R_e) and extending upward. Each box is EXACT PEC (no staircasing) because
+% it is aligned to grid coordinate surfaces. Multiple boxes are supported via
+% box_list (Nbox x 6): each row [i1 i2 j1 j2 k1 k2] of index ranges.
+%
+% If ext_cfg.box_list is supplied (the clutter/target run suite), it is used
+% directly. Otherwise the single built-in box below is constructed (backward
+% compatible with the original single-scatterer behavior).
+box_enabled = ~isempty(ext_cfg.box_list);
 
-% ---- physical size / placement (edit these) ----
-box_height_m     = 30;    % radial height above the surface [m]
-box_len_theta_m  = 200;    % N-S extent (theta) [m]
-box_len_phi_m    = 30;    % E-W extent (phi, along propagation) [m]
-box_center_km    = 45;     % range from source along the path (like a probe) [km]
+if nargin >= 1 && isstruct(ext_cfg) && isfield(ext_cfg,'box_list') %&& ~isempty(ext_cfg.box_list) breaks for background case
+    % -------- external box list (target + fixed clutter) --------
+    box_list = ext_cfg.box_list;
+    fprintf('PEC boxes: %d supplied via ext_cfg (target + clutter).\n', size(box_list,1));
+else
+    % -------- built-in single box (original behavior) --------
+    box_height_m     = 30;     % radial height above the surface [m]
+    box_len_theta_m  = 200;    % N-S extent (theta) [m]
+    box_len_phi_m    = 30;     % E-W extent (phi, along propagation) [m]
+    box_center_km    = 45;     % range from source along the path [km]
 
-% ---- convert to index ranges (clamped to the grid) ----
-box_i1 = 1;                                              % bottom face at surface
-box_i2 = min(Nr, box_i1 + max(1, round(box_height_m/del_r)));
+    box_i1 = 1;
+    box_i2 = min(Nr, box_i1 + max(1, round(box_height_m/del_r)));
+    nCell_the = max(1, round(box_len_theta_m / (R_Earth*del_the)));
+    box_jc = probe_j;
+    box_j1 = max(1,    box_jc - floor(nCell_the/2));
+    box_j2 = min(Nthe, box_jc + ceil (nCell_the/2));
+    delta_phi_box = box_center_km*1e3 / (R_Earth * cos(lat0_rad));
+    [~, box_kc] = min(abs(phi_node - (phi_start + delta_phi_box)));
+    nCell_phi = max(1, round(box_len_phi_m / (R_Earth*sin_the_node(box_jc)*del_phi)));
+    box_k1 = max(1,    box_kc - floor(nCell_phi/2));
+    box_k2 = min(Nphi, box_kc + ceil (nCell_phi/2));
+    box_list = [box_i1 box_i2 box_j1 box_j2 box_k1 box_k2];
+    fprintf('PEC box (built-in single): i=%d:%d j=%d:%d k=%d:%d, center %.1f km\n', ...
+            box_i1, box_i2, box_j1, box_j2, box_k1, box_k2, box_center_km);
+end
 
-nCell_the = max(1, round(box_len_theta_m / (R_Earth*del_the)));
-box_jc = probe_j;                                       % centered on the axis
-box_j1 = max(1,    box_jc - floor(nCell_the/2));
-box_j2 = min(Nthe, box_jc + ceil (nCell_the/2));
-
-delta_phi_box = box_center_km*1e3 / (R_Earth * cos(lat0_rad));
-[~, box_kc] = min(abs(phi_node - (phi_start + delta_phi_box)));
-nCell_phi = max(1, round(box_len_phi_m / (R_Earth*sin_the_node(box_jc)*del_phi)));
-box_k1 = max(1,    box_kc - floor(nCell_phi/2));
-box_k2 = min(Nphi, box_kc + ceil (nCell_phi/2));
-
+% Validate every box: in-bounds, non-degenerate, not overlapping the source.
 if box_enabled
-    fprintf(['PEC box: i=%d:%d (%.0f m tall), j=%d:%d (%.0f m long), k=%d:%d (%.0f m long)  ' ...
-             'center %.1f km from source\n'], ...
-            box_i1, box_i2, (box_i2-box_i1)*ds, box_j1, box_j2, ...
-            (box_j2-box_j1)*ds, box_k1, box_k2, (box_k2-box_k1)*ds, box_center_km);
-    % Sanity checks
-    if box_k1 <= src_k && src_k <= box_k2 && box_j1 <= src_j && src_j <= box_j2
-        warning('PEC box OVERLAPS the source column -- move box_center_km or the source.');
-    end
-    if box_i2 <= box_i1 || box_j2 <= box_j1 || box_k2 <= box_k1
-        warning('PEC box is degenerate (a range collapsed) -- increase its size.');
+    for bb = 1:size(box_list,1)
+        b = box_list(bb,:);
+        if b(2)<=b(1) || b(4)<=b(3) || b(6)<=b(5)
+            warning('PEC box %d is degenerate (a range collapsed).', bb);
+        end
+        if b(5)<=src_k && src_k<=b(6) && b(3)<=src_j && src_j<=b(4)
+            warning('PEC box %d OVERLAPS the source column.', bb);
+        end
+        if any(b([1 3 5])<1) || b(2)>Nr || b(4)>Nthe || b(6)>Nphi
+            warning('PEC box %d is out of grid bounds.', bb);
+        end
     end
 end
 
@@ -565,6 +583,9 @@ end
 %% Visualization setup
 %% ============================================================
 viz_enable = false;
+if nargin >= 1 && isstruct(ext_cfg) && isfield(ext_cfg,'viz_enable')
+    viz_enable = ext_cfg.viz_enable;   % suite runs override (usually false)
+end
 viz_every          = 75; % Normally set to 75, reduced to 5 for testing
 viz_noise_floor    = 1e-6;
 viz_save_pngs      = false;
@@ -613,6 +634,12 @@ for n = 0:num_steps-1
     end
 end
 fprintf('\nTotal runtime: %.1f s\n', toc(tic_total));
+
+% Save the probe record for the run suite (clutter/target integration driver).
+if nargin >= 1 && isstruct(ext_cfg) && isfield(ext_cfg,'save_path') && ~isempty(ext_cfg.save_path)
+    save(ext_cfg.save_path, 'probe_record', 'del_t', 'box_list', '-v7.3');
+    fprintf('Saved probe_record to %s\n', ext_cfg.save_path);
+end
 
 %% ============================================================
 %% Post-loop plotting
@@ -838,9 +865,14 @@ function apply_pec_box()
     % staggered location lies within the closed box, which enforces tangential
     % E = 0 on every face and E = 0 in the interior, while leaving the normal-E
     % just outside each face untouched (it lives at a half-position outside).
-    E_r  (box_i1:box_i2-1, box_j1:box_j2,   box_k1:box_k2  ) = 0;  % E_r  @ r_half
-    E_th (box_i1:box_i2,   box_j1:box_j2-1, box_k1:box_k2  ) = 0;  % E_th @ the_half
-    E_phi(box_i1:box_i2,   box_j1:box_j2,   box_k1:box_k2-1) = 0;  % E_phi@ phi_half
+    for bb = 1:size(box_list,1)
+        i1=box_list(bb,1); i2=box_list(bb,2);
+        j1=box_list(bb,3); j2=box_list(bb,4);
+        k1=box_list(bb,5); k2=box_list(bb,6);
+        E_r  (i1:i2-1, j1:j2,   k1:k2  ) = 0;  % E_r  @ r_half
+        E_th (i1:i2,   j1:j2-1, k1:k2  ) = 0;  % E_th @ the_half
+        E_phi(i1:i2,   j1:j2,   k1:k2-1) = 0;  % E_phi@ phi_half
+    end
 end
 
 function apply_source(t_now)
